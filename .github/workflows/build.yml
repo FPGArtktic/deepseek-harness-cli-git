@@ -1,0 +1,72 @@
+name: Build package
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Build in clean Arch container
+        run: |
+          docker run --rm -v "$PWD:/pkg" archlinux:base-devel bash -euo pipefail -c '
+            pacman -Syu --noconfirm --needed git namcap
+            useradd -m builder
+            echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+            chown -R builder: /pkg
+            cd /pkg
+            sudo -u builder makepkg --printsrcinfo | diff -u .SRCINFO - \
+              || { echo "::error::.SRCINFO is out of date"; exit 1; }
+            sudo -u builder makepkg --syncdeps --noconfirm --cleanbuild
+            echo "::group::namcap"
+            namcap ./*.pkg.tar.zst || true
+            echo "::endgroup::"
+            pacman -Qip ./*.pkg.tar.zst | sed -n "1,3p"
+          '
+
+      - name: Report failure
+        if: failure() && github.event_name != 'pull_request'
+        run: |
+          body="Build failed on $(date -u +%F): $RUN_URL
+
+          @${{ github.repository_owner }}"
+          issue=$(gh issue list --label build-failure --state open --json number --jq '.[0].number')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh label create build-failure --color B60205 --force
+            gh issue create --title "Build failure: deepseek-harness-cli-git" \
+              --label build-failure --body "$body"
+          fi
+
+      - name: Close resolved failures
+        if: success()
+        run: |
+          for issue in $(gh issue list --label build-failure --state open --json number --jq '.[].number'); do
+            gh issue close "$issue" --comment "Build passes again: $RUN_URL"
+          done
