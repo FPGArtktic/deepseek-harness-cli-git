@@ -34,10 +34,11 @@ jobs:
 
       - name: Build in clean Arch container
         run: |
-          docker run --rm -v "$PWD:/pkg" archlinux:base-devel bash -euo pipefail -c '
+          docker run --rm -v "$PWD:/pkg" -e HOST_IDS="$(id -u):$(id -g)" archlinux:base-devel bash -euo pipefail -c '
             pacman -Syu --noconfirm --needed git namcap
             useradd -m builder
             echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+            trap "chown -R \"\$HOST_IDS\" /pkg" EXIT
             chown -R builder: /pkg
             cd /pkg
             sudo -u builder makepkg --printsrcinfo | diff -u .SRCINFO - \
